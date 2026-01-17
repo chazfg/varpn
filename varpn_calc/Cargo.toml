@@ -1,0 +1,8 @@
+[package]
+name = "varpn_calc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rustyline = "17.0.2"
+varpn_parser = { version = "0.1.0", path = "../varpn_parser" }

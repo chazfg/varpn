@@ -1,4 +1,4 @@
-use varpn::{err::VarpnResult, parse_tokens, rpn_stack};
+use varpn_parser::{err::VarpnResult, parse_tokens, rpn_stack};
 
 const T1: &str = "a - b - c";
 
