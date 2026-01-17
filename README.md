@@ -1,7 +1,7 @@
 ### Overview
 
-*Parser*: Converts infix to rpn formatted tokens
-*Calc*: Cli that uses the parser output to calculate things
+- **Parser**: Converts infix to rpn formatted tokens
+- **Calc**: Cli that uses the parser output to calculate things
 
 
 ### Calculator
