@@ -21,6 +21,12 @@ pub enum VarpnErr {
 }
 
 impl VarpnErr {
+    pub fn source(&self) -> &VarpnErr {
+        match &self {
+            VarpnErr::Backtrace { inner, .. } => inner.source(),
+            VarpnErr::Source { .. } => self,
+        }
+    }
     pub fn write_chain(&self, f: &mut std::fmt::Formatter<'_>, depth: u32) -> std::fmt::Result {
         for _ in 0..depth.max(4) {
             write!(f, "  ")?;
