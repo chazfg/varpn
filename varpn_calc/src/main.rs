@@ -7,18 +7,18 @@ use std::{
 
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
-use varpn_parser::{Operation, OutputItem, OutputValue, Token, parse_tokens, rpn_stack};
+use varpn_parser::{Atom, Lexeme, Op, RpnItem, parse_tokens, rpn_stack};
 fn calc(line: &str, var_map: &mut CalcState) {
     let rpn_tokens = parse_tokens(line).unwrap();
     let rpn_ops = rpn_stack(rpn_tokens).unwrap();
     let mut calc_stack = Vec::new();
     rpn_ops.iter().for_each(|op| match op {
-        OutputItem::Value(OutputValue::Variable(var)) => {
+        RpnItem::Value(Atom::Variable(var)) => {
             calc_stack.push(var_map.get_var(var).unwrap());
         }
-        OutputItem::Value(OutputValue::Literal(lit)) => calc_stack.push(cast(lit)),
-        OutputItem::Value(OutputValue::LastValRef) => calc_stack.push(var_map.last_value.unwrap()),
-        OutputItem::Op(op) => {
+        RpnItem::Value(Atom::Literal(lit)) => calc_stack.push(cast(lit)),
+        RpnItem::Value(Atom::LastValRef) => calc_stack.push(var_map.last_value.unwrap()),
+        RpnItem::Op(op) => {
             let rhs = calc_stack.pop().unwrap();
             let lhs = calc_stack.pop().unwrap();
             calc_stack.push(apply(op, lhs, rhs));
@@ -49,14 +49,14 @@ fn set_var(line: &str, var_map: &mut CalcState) {
     assert!(var_tok.len() == 1);
     assert!(val_tok.len() == 1);
 
-    let var_name = if let Token::Variable(v) = &var_tok[0] {
+    let var_name = if let Lexeme::Ident(v) = &var_tok[0] {
         v.to_string()
     } else {
         panic!()
     };
     let var_value = match &val_tok[0] {
-        Token::Variable(old_var) => var_map.get_var(old_var).unwrap(),
-        Token::Literal(lit) => cast(lit),
+        Lexeme::Ident(old_var) => var_map.get_var(old_var).unwrap(),
+        Lexeme::Number(lit) => cast(lit),
         _ => panic!(),
     };
     var_map.set_var(var_name, var_value);
@@ -135,14 +135,14 @@ fn is_reserved(first_word: String) -> Option<ReservedWord> {
     }
 }
 
-fn apply(op: &Operation, lhs: Value, rhs: Value) -> Value {
+fn apply(op: &Op, lhs: Value, rhs: Value) -> Value {
     match op {
-        Operation::Add => lhs + rhs,
-        Operation::Subtract => lhs - rhs,
-        Operation::Multiply => lhs * rhs,
-        Operation::Divide => lhs / rhs,
-        Operation::Modulo => lhs % rhs,
-        Operation::Power => lhs.pow(rhs),
+        Op::Add => lhs + rhs,
+        Op::Subtract => lhs - rhs,
+        Op::Multiply => lhs * rhs,
+        Op::Divide => lhs / rhs,
+        Op::Modulo => lhs % rhs,
+        Op::Power => lhs.pow(rhs),
     }
 }
 
