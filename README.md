@@ -14,7 +14,7 @@ $ varpn_calc
 ```
 
 do calcs: $ can reference last value returned 
-```
+```bash
 >> 1 + 1
 = 2
 >> $
@@ -24,7 +24,7 @@ do calcs: $ can reference last value returned
 ```
 
 set vars
-```
+```bash
 >> set x = 17
 >> x
 = 17
