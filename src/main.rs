@@ -1,11 +1,21 @@
+use crate::err::Trace;
 use std::{cmp::Ordering, vec::Vec};
+
+use crate::err::{VarpnErr, VarpnResult};
+mod err;
 
 const T1: &str = "a - b - c";
 
-fn main() {
-    let tokens = parse_tokens(T1);
+fn main() -> VarpnResult<()> {
+    let tokens = parse_tokens(T1)?;
     let stack = rpn_stack(tokens);
     println!("{stack:?}");
+    Ok(())
+}
+impl From<ControlOp> for OpStackValue {
+    fn from(value: ControlOp) -> Self {
+        OpStackValue::Control(value)
+    }
 }
 impl From<Operation> for OpStackValue {
     fn from(value: Operation) -> Self {
@@ -27,12 +37,12 @@ impl From<Operation> for OutputItem {
 #[derive(Default, Debug)]
 struct OutputStack(Vec<OpStackValue>);
 impl OutputStack {
-    fn push_op(&mut self, new_op: Operation) -> Vec<OutputItem> {
+    fn push_op(&mut self, new_op: Operation) -> VarpnResult<Vec<OutputItem>> {
         let mut out_vec = Vec::new();
         let new_op_prec = new_op.precedence();
         if self.0.is_empty() {
             self.0.push(OpStackValue::Op(new_op));
-            return out_vec;
+            return Ok(out_vec);
         } else {
             while !self.0.is_empty() {
                 match &self.0[self.0.len() - 1] {
@@ -40,7 +50,14 @@ impl OutputStack {
                         let old_op_prec = operation.precedence();
                         match new_op_prec.cmp(&old_op_prec) {
                             Ordering::Less => {
-                                out_vec.push(self.0.pop().unwrap().op().into());
+                                out_vec.push(
+                                    self.0
+                                        .pop()
+                                        .unwrap()
+                                        .op()
+                                        .trace(format!("{} op conversion", line!()))?
+                                        .into(),
+                                );
                                 if self.0.is_empty() {
                                     self.0.push(new_op.into());
                                     break;
@@ -67,36 +84,61 @@ impl OutputStack {
             }
         }
 
-        out_vec
+        Ok(out_vec)
     }
 
-    fn push_control(&mut self, control_op: ControlOp) -> Vec<OutputItem> {
-        todo!()
+    fn push_control(&mut self, control_op: ControlOp) -> VarpnResult<Vec<OutputItem>> {
+        let mut out_vec = vec![];
+        match control_op {
+            ControlOp::LParen => {
+                self.0.push(control_op.into());
+                Ok(out_vec)
+            }
+            ControlOp::RParen => {
+                while let Some(op) = self.0.pop()
+                    && op != OpStackValue::Control(ControlOp::LParen)
+                {
+                    out_vec.push(op.op().trace(format!("{} failed op conv", line!()))?.into());
+                }
+                Ok(out_vec)
+            }
+        }
     }
 }
 
-fn rpn_stack(mut tokens: Vec<Token>) -> Vec<OutputItem> {
+fn rpn_stack(mut tokens: Vec<Token>) -> VarpnResult<Vec<OutputItem>> {
     let mut op_stack = OutputStack::default();
     // let mut output_val_stack: Vec<OutputValue> = Vec::new();
     let mut output: Vec<OutputItem> = Vec::new();
-    tokens.drain(..).for_each(|t| match t {
-        Token::Variable(s) => output.push(OutputItem::Value(OutputValue::Variable(s))),
-        Token::Literal(s) => output.push(OutputItem::Value(OutputValue::Literal(s))),
-        Token::Op(operation) => {
-            output.extend(op_stack.push_op(operation));
+    tokens.drain(..).try_for_each(|t| -> VarpnResult<()> {
+        match t {
+            Token::Variable(s) => output.push(OutputItem::Value(OutputValue::Variable(s))),
+            Token::Literal(s) => output.push(OutputItem::Value(OutputValue::Literal(s))),
+            Token::Op(operation) => {
+                output.extend(
+                    op_stack
+                        .push_op(operation)
+                        .trace(format!("{} extend op", line!()))?,
+                );
+            }
+            Token::Control(control_op) => {
+                output.extend(
+                    op_stack
+                        .push_control(control_op)
+                        .trace(format!("{} rpn stack", line!()))?,
+                );
+            }
         }
-        Token::Control(control_op) => {
-            output.extend(op_stack.push_control(control_op));
-        }
-    });
+        Ok(())
+    })?;
     while let Some(v) = op_stack.0.pop() {
         if let OpStackValue::Op(x) = v {
             output.push(OutputItem::Op(x));
         }
     }
-    output
+    Ok(output)
 }
-fn parse_tokens(s: &str) -> Vec<Token> {
+fn parse_tokens(s: &str) -> VarpnResult<Vec<Token>> {
     let mut buf = String::new();
     let mut tokens = Vec::new();
     // let mut operator_stack = Vec::new();
@@ -104,13 +146,19 @@ fn parse_tokens(s: &str) -> Vec<Token> {
         match c {
             '+' | '-' | '/' | '*' => {
                 if !buf.is_empty() {
-                    tokens.push(Token::parse_text(std::mem::take(&mut buf)));
+                    tokens.push(
+                        Token::parse_text(std::mem::take(&mut buf))
+                            .trace(format!("{}: parse tokens", line!()))?,
+                    );
                 }
                 tokens.push(Token::Op(Operation::from_char(c)));
             }
             '(' | ')' => {
                 if !buf.is_empty() {
-                    tokens.push(Token::parse_text(std::mem::take(&mut buf)));
+                    tokens.push(
+                        Token::parse_text(std::mem::take(&mut buf))
+                            .trace(format!("{}: parse tokens", line!()))?,
+                    );
                 }
                 tokens.push(Token::Control(ControlOp::from_char(c)));
             }
@@ -121,9 +169,12 @@ fn parse_tokens(s: &str) -> Vec<Token> {
         }
     }
     if !buf.is_empty() {
-        tokens.push(Token::parse_text(std::mem::take(&mut buf)));
+        tokens.push(
+            Token::parse_text(std::mem::take(&mut buf))
+                .trace(format!("{}: parse tokens", line!()))?,
+        );
     }
-    tokens
+    Ok(tokens)
 }
 
 #[derive(Debug)]
@@ -138,16 +189,18 @@ enum OutputValue {
     Literal(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum OpStackValue {
     Op(Operation),
     Control(ControlOp),
 }
 impl OpStackValue {
-    fn op(&self) -> Operation {
+    fn op(&self) -> VarpnResult<Operation> {
         match self {
-            OpStackValue::Op(operation) => *operation,
-            OpStackValue::Control(..) => panic!(),
+            OpStackValue::Op(operation) => Ok(*operation),
+            OpStackValue::Control(..) => {
+                Err(VarpnErr::Source(format!("can't make {self:?} an op")))
+            }
         }
     }
 }
@@ -164,14 +217,14 @@ impl Token {
         Self::Op(Operation::from_char(c))
     }
 
-    fn parse_text(buf: String) -> Token {
+    fn parse_text(buf: String) -> VarpnResult<Token> {
         assert!(check_valid(&buf), "something wrong {buf}");
         let has_nums = buf.contains(char::is_numeric);
         let has_text = buf.contains(char::is_alphabetic);
         match (has_text, has_nums) {
-            (true, true) | (true, false) => Self::Variable(buf),
-            (false, true) => Self::Literal(buf),
-            _ => panic!(),
+            (true, true) | (true, false) => Ok(Self::Variable(buf)),
+            (false, true) => Ok(Self::Literal(buf)),
+            _ => Err(VarpnErr::Source(format!("Parse text failed for {buf}"))),
         }
     }
 }
@@ -182,36 +235,18 @@ fn check_valid(buf: &str) -> bool {
         .all(|c| matches!(c, 48..=52 | 65..=90 | 95 | 46 | 97..=122))
 }
 
-// #[derive(Debug)]
-// enum Variable {
-//     Literal(String),
-//     Name(String),
-// }
-// impl Variable {
-//     fn parse(s: &str) -> Self {
-//         let has_nums = s.contains(char::is_numeric);
-//         let has_text = s.contains(char::is_alphabetic);
-//         match (has_text, has_nums) {
-//             (true, false) => Self::Name(s.to_string()),
-//             (false, true) => Self::Literal(s.to_string()),
-//             _ => panic!(),
-//         }
-//     }
-// }
-//
-// #[derive(Debug)]
-// enum OpStackToken {
-//     Control(ControlOp),
-//     Op(Operation),
-// }
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum ControlOp {
     LParen,
     RParen,
 }
 impl ControlOp {
     fn from_char(c: char) -> ControlOp {
-        todo!()
+        match c {
+            '(' => Self::LParen,
+            ')' => Self::RParen,
+            _ => panic!(),
+        }
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -311,7 +346,7 @@ mod tests {
         ];
 
         for (input, expected) in cases {
-            let actual = token_sig(parse_tokens(input));
+            let actual = token_sig(parse_tokens(input).unwrap());
             let expected = expected.iter().map(|s| s.to_string()).collect::<Vec<_>>();
             assert_eq!(actual, expected, "input: {input}");
         }
@@ -329,7 +364,7 @@ mod tests {
         ];
 
         for (input, expected) in cases {
-            let actual = rpn_sig(rpn_stack(parse_tokens(input)));
+            let actual = rpn_sig(rpn_stack(parse_tokens(input).unwrap()).unwrap());
             let expected = expected.iter().map(|s| s.to_string()).collect::<Vec<_>>();
             assert_eq!(actual, expected, "input: {input}");
         }
@@ -338,7 +373,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn parse_tokens_rejects_invalid_chars() {
-        parse_tokens("1$2");
+        parse_tokens("1$2").unwrap();
     }
 
     #[test]
@@ -351,21 +386,18 @@ mod tests {
             ),
             (
                 "(a + b) * (c - d)",
-                vec![
-                    "var:a", "var:b", "op:+", "var:c", "var:d", "op:-", "op:*",
-                ],
+                vec!["var:a", "var:b", "op:+", "var:c", "var:d", "op:-", "op:*"],
             ),
             (
                 "a * (b + c * (d - e))",
                 vec![
-                    "var:a", "var:b", "var:c", "var:d", "var:e", "op:-", "op:*", "op:+",
-                    "op:*",
+                    "var:a", "var:b", "var:c", "var:d", "var:e", "op:-", "op:*", "op:+", "op:*",
                 ],
             ),
         ];
 
         for (input, expected) in cases {
-            let actual = rpn_sig(rpn_stack(parse_tokens(input)));
+            let actual = rpn_sig(rpn_stack(parse_tokens(input).unwrap()).unwrap());
             let expected = expected.iter().map(|s| s.to_string()).collect::<Vec<_>>();
             assert_eq!(actual, expected, "input: {input}");
         }
