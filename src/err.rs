@@ -1,51 +1,59 @@
 pub type VarpnResult<T> = Result<T, VarpnErr>;
 pub trait Trace<T> {
-    fn trace(self, msg: impl ToString) -> VarpnResult<T>;
+    fn trace(self, line: u32, msg: impl ToString) -> VarpnResult<T>;
 }
 impl<T> Trace<T> for VarpnResult<T> {
-    fn trace(self, msg: impl ToString) -> VarpnResult<T> {
-        self.map_err(|e| e.add_trace(msg.to_string()))
+    fn trace(self, line: u32, msg: impl ToString) -> VarpnResult<T> {
+        self.map_err(|e| e.add_trace(line, msg.to_string()))
     }
 }
 #[derive(Debug)]
 pub enum VarpnErr {
-    Backtrace(String, Box<Self>),
-    Source(String),
+    Backtrace {
+        line: u32,
+        msg: String,
+        inner: Box<Self>,
+    },
+    Source {
+        line: u32,
+        msg: String,
+    },
 }
+
 impl VarpnErr {
-    pub fn new(s: String) -> Self {
-        Self::Source(s)
+    pub fn write_chain(&self, f: &mut std::fmt::Formatter<'_>, depth: u32) -> std::fmt::Result {
+        for _ in 0..depth.max(4) {
+            write!(f, "  ")?;
+        }
+        match self {
+            VarpnErr::Backtrace { line, msg, inner } => {
+                writeln!(f, "trace on {line}: {msg}")?;
+                inner.write_chain(f, depth + 1)
+            }
+            VarpnErr::Source { line, msg } => {
+                writeln!(f, "source {line}: {msg}")
+            }
+        }
     }
-    pub fn add_trace(self, s: String) -> Self {
-        Self::Backtrace(s, Box::new(self))
+
+    pub fn new(line: u32, msg: impl ToString) -> Self {
+        Self::Source {
+            line,
+            msg: msg.to_string(),
+        }
+    }
+    pub fn add_trace(self, line: u32, msg: String) -> Self {
+        Self::Backtrace {
+            line,
+            msg,
+            inner: Box::new(self),
+        }
     }
 }
 
 impl std::fmt::Display for VarpnErr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        fn write_chain(
-            err: &VarpnErr,
-            f: &mut std::fmt::Formatter<'_>,
-            depth: usize,
-        ) -> std::fmt::Result {
-            match err {
-                VarpnErr::Source(msg) => {
-                    for _ in 0..depth {
-                        write!(f, "  ")?;
-                    }
-                    writeln!(f, "{msg}")
-                }
-                VarpnErr::Backtrace(msg, inner) => {
-                    for _ in 0..depth {
-                        write!(f, "  ")?;
-                    }
-                    writeln!(f, "{msg}")?;
-                    write_chain(inner, f, depth + 1)
-                }
-            }
-        }
-
-        write_chain(self, f, 0)
+        self.write_chain(f, 0)
     }
 }
 
