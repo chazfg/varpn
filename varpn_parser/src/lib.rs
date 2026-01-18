@@ -24,17 +24,45 @@ impl From<Op> for RpnItem {
     }
 }
 
+/// CallFrame represents the call of a function
 #[derive(Default, Debug)]
-struct OutputStack(Vec<StackEntry>);
+struct CallFrame {
+    /// Function Name
+    name: String,
+    /// Count of commas seen in callsite
+    comma: u32,
+    /// If arg has been seen (for functions with no args)
+    saw_arg: bool,
+    /// Paren nesting depth
+    depth: u32,
+}
+impl CallFrame {
+    pub fn new(name: String) -> Self {
+        Self {
+            name,
+            ..Default::default()
+        }
+    }
+
+    fn on_comma(&mut self) {
+        self.comma += 1;
+        self.saw_arg = false;
+    }
+}
+#[derive(Default, Debug)]
+struct OutputStack {
+    stack: Vec<StackEntry>,
+}
+
 impl OutputStack {
     fn _right_assoc_push_op(&mut self, new_op: Op) -> VarpnResult<Vec<RpnItem>> {
         let mut out_vec = Vec::new();
         let new_op_prec = new_op.precedence();
-        while !self.0.is_empty() {
-            match &self.0[self.0.len() - 1] {
+        while let Some(stack_top) = self.stack.last().as_ref() {
+            match stack_top {
                 #[cfg(feature = "functions")]
                 StackEntry::Func(..) => {
-                    self.0.push(new_op.into());
+                    self.stack.push(new_op.into());
                     break;
                 }
                 StackEntry::Op(operation) => {
@@ -42,31 +70,31 @@ impl OutputStack {
                     match new_op_prec.cmp(&old_op_prec) {
                         Ordering::Less => {
                             out_vec.push(
-                                self.0
+                                self.stack
                                     .pop()
                                     .unwrap()
                                     .op()
                                     .trace(line!(), "op conversion")?
                                     .into(),
                             );
-                            if self.0.is_empty() {
-                                self.0.push(new_op.into());
+                            if self.stack.is_empty() {
+                                self.stack.push(new_op.into());
                                 break;
                             }
                         }
                         Ordering::Equal => {
-                            self.0.push(StackEntry::Op(new_op));
+                            self.stack.push(StackEntry::Op(new_op));
                             break;
                         }
                         Ordering::Greater => {
-                            self.0.push(new_op.into());
+                            self.stack.push(new_op.into());
                             break;
                         }
                     }
                 }
 
                 StackEntry::Control(..) => {
-                    self.0.push(StackEntry::Op(new_op));
+                    self.stack.push(StackEntry::Op(new_op));
                     break;
                 }
             }
@@ -76,11 +104,11 @@ impl OutputStack {
     fn _left_assoc_push_op(&mut self, new_op: Op) -> VarpnResult<Vec<RpnItem>> {
         let mut out_vec = Vec::new();
         let new_op_prec = new_op.precedence();
-        while !self.0.is_empty() {
-            match &self.0[self.0.len() - 1] {
+        while let Some(stack_top) = self.stack.last() {
+            match stack_top {
                 #[cfg(feature = "functions")]
                 StackEntry::Func(..) => {
-                    self.0.push(new_op.into());
+                    self.stack.push(new_op.into());
                     break;
                 }
                 StackEntry::Op(operation) => {
@@ -88,33 +116,33 @@ impl OutputStack {
                     match new_op_prec.cmp(&old_op_prec) {
                         Ordering::Less => {
                             out_vec.push(
-                                self.0
+                                self.stack
                                     .pop()
                                     .unwrap()
                                     .op()
                                     .trace(line!(), "op conversion")?
                                     .into(),
                             );
-                            if self.0.is_empty() {
-                                self.0.push(new_op.into());
+                            if self.stack.is_empty() {
+                                self.stack.push(new_op.into());
                                 break;
                             }
                         }
                         Ordering::Equal => {
                             out_vec.push(operation.into());
-                            self.0.pop().unwrap();
-                            self.0.push(StackEntry::Op(new_op));
+                            self.stack.pop().unwrap();
+                            self.stack.push(StackEntry::Op(new_op));
                             break;
                         }
                         Ordering::Greater => {
-                            self.0.push(new_op.into());
+                            self.stack.push(new_op.into());
                             break;
                         }
                     }
                 }
 
                 StackEntry::Control(..) => {
-                    self.0.push(StackEntry::Op(new_op));
+                    self.stack.push(StackEntry::Op(new_op));
                     break;
                 }
             }
@@ -122,8 +150,8 @@ impl OutputStack {
         Ok(out_vec)
     }
     pub fn push_op(&mut self, new_op: Op) -> VarpnResult<Vec<RpnItem>> {
-        if self.0.is_empty() {
-            self.0.push(StackEntry::Op(new_op));
+        if self.stack.is_empty() {
+            self.stack.push(StackEntry::Op(new_op));
             Ok(vec![])
         } else {
             match new_op.associativity() {
@@ -137,16 +165,16 @@ impl OutputStack {
         let mut out_vec = vec![];
         match control_op {
             Control::LParen => {
-                self.0.push(control_op.into());
+                self.stack.push(control_op.into());
                 Ok(out_vec)
             }
             #[cfg(feature = "functions")]
             Control::Comma => {
-                while let Some(top) = self.0.last() {
+                while let Some(top) = self.stack.last() {
                     match top {
                         StackEntry::Op(op) => {
                             out_vec.push((*op).into());
-                            self.0.pop();
+                            self.stack.pop();
                         }
 
                         StackEntry::Func(..)
@@ -155,27 +183,31 @@ impl OutputStack {
                         StackEntry::Control(Control::RParen) => unreachable!(),
                     }
                 }
-                self.0.push(StackEntry::Control(Control::Comma));
+                self.stack.push(StackEntry::Control(Control::Comma));
                 Ok(out_vec)
             }
             Control::RParen => {
-                #[cfg(feature = "functions")]
-                let mut comma_count = 0;
-                while let Some(popped_op) = self.0.pop()
-                // && op != StackEntry::Control(Paren::LParen)
-                {
+                let mut found_lparen = false;
+                while let Some(popped_op) = self.stack.pop() {
                     match popped_op {
-                        #[cfg(feature = "functions")]
-                        StackEntry::Func(func_name) => {
-                            out_vec.push(RpnItem::Func(func_name, comma_count + 1));
-                            break;
-                        }
                         StackEntry::Op(op) => out_vec.push(op.into()),
                         #[cfg(feature = "functions")]
-                        StackEntry::Control(Control::Comma) => comma_count += 1,
-                        StackEntry::Control(Control::LParen) => break,
+                        StackEntry::Func(..) => {}
+                        #[cfg(feature = "functions")]
+                        StackEntry::Control(Control::Comma) => {}
+                        StackEntry::Control(Control::LParen) => {
+                            found_lparen = true;
+                            break;
+                        }
                         StackEntry::Control(Control::RParen) => unreachable!(),
                     }
+                }
+                if !found_lparen {
+                    return Err(VarpnErr::new(line!(), "Unmatched ')'"));
+                }
+                #[cfg(feature = "functions")]
+                if let Some(StackEntry::Func(..)) = self.stack.last() {
+                    self.stack.pop();
                 }
                 Ok(out_vec)
             }
@@ -184,43 +216,114 @@ impl OutputStack {
 
     #[cfg(feature = "functions")]
     fn push_func(&mut self, func_name: String) -> VarpnResult<()> {
-        self.0.push(StackEntry::Func(func_name));
+        self.stack.push(StackEntry::Func(func_name));
         Ok(())
     }
 }
 
 pub fn rpn_stack(mut tokens: Vec<Lexeme>) -> VarpnResult<Vec<RpnItem>> {
     let mut op_stack = OutputStack::default();
-    // let mut output_val_stack: Vec<OutputValue> = Vec::new();
     let mut output: Vec<RpnItem> = Vec::new();
+    let mut call_frames: Vec<CallFrame> = Vec::new();
     tokens.drain(..).try_for_each(|t| -> VarpnResult<()> {
         match t {
-            Lexeme::Ident(s) => output.push(RpnItem::Value(Atom::Variable(s))),
-            Lexeme::Number(s) => output.push(RpnItem::Value(Atom::Literal(s))),
-            Lexeme::LastValRef => output.push(RpnItem::Value(Atom::LastValRef)),
+            Lexeme::Ident(s) => {
+                output.push(RpnItem::Value(Atom::Variable(s)));
+                if let Some(frame) = call_frames.last_mut() {
+                    frame.saw_arg = true;
+                }
+            }
+            Lexeme::Number(s) => {
+                output.push(RpnItem::Value(Atom::Literal(s)));
+                if let Some(frame) = call_frames.last_mut() {
+                    frame.saw_arg = true;
+                }
+            }
+            Lexeme::LastValRef => {
+                output.push(RpnItem::Value(Atom::LastValRef));
+                if let Some(frame) = call_frames.last_mut() {
+                    frame.saw_arg = true;
+                }
+            }
             Lexeme::Op(operation) => {
                 output.extend(op_stack.push_op(operation).trace(line!(), "extend op")?);
             }
-            Lexeme::Control(control_op) => {
+            Lexeme::Control(Control::Comma) => {
                 output.extend(
                     op_stack
-                        .push_control(control_op)
+                        .push_control(Control::Comma)
                         .trace(line!(), "rpn stack")?,
                 );
+                if let Some(frame) = call_frames.last_mut()
+                    && frame.depth == 1
+                {
+                    frame.on_comma();
+                }
+            }
+            Lexeme::Control(Control::RParen) => {
+                output.extend(
+                    op_stack
+                        .push_control(Control::RParen)
+                        .trace(line!(), "rpn stack")?,
+                );
+                if let Some(frame) = call_frames.last_mut() {
+                    if frame.depth == 1 {
+                        let frame = call_frames.pop().unwrap();
+                        let CallFrame {
+                            name,
+                            comma,
+                            saw_arg,
+                            ..
+                        } = frame;
+                        output.push(RpnItem::Func(name, arity(comma, saw_arg)));
+                        if let Some(parent) = call_frames.last_mut() {
+                            parent.saw_arg = true;
+                        }
+                    } else {
+                        frame.depth -= 1;
+                    }
+                }
+            }
+            Lexeme::Control(Control::LParen) => {
+                output.extend(
+                    op_stack
+                        .push_control(Control::LParen)
+                        .trace(line!(), "rpn stack")?,
+                );
+                if let Some(frame) = call_frames.last_mut() {
+                    frame.depth += 1;
+                }
             }
             #[cfg(feature = "functions")]
             Lexeme::Function(func_name) => {
+                call_frames.push(CallFrame::new(func_name.clone()));
                 op_stack.push_func(func_name).trace(line!(), "function")?
             }
         }
         Ok(())
     })?;
-    while let Some(v) = op_stack.0.pop() {
-        if let StackEntry::Op(x) = v {
-            output.push(RpnItem::Op(x));
+    while let Some(v) = op_stack.stack.pop() {
+        match v {
+            StackEntry::Op(x) => output.push(RpnItem::Op(x)),
+            StackEntry::Control(Control::LParen) => {
+                return Err(VarpnErr::new(line!(), "Unmatched '('"));
+            }
+            StackEntry::Control(Control::RParen) => unreachable!(),
+            #[cfg(feature = "functions")]
+            StackEntry::Control(Control::Comma) => {
+                return Err(VarpnErr::new(line!(), "Dangling ','"));
+            }
+            #[cfg(feature = "functions")]
+            StackEntry::Func(..) => {
+                return Err(VarpnErr::new(line!(), "Unclosed function call"));
+            }
         }
     }
     Ok(output)
+}
+
+fn arity(comma: u32, saw_arg: bool) -> u32 {
+    if comma == 0 && !saw_arg { 0 } else { comma + 1 }
 }
 pub fn parse_tokens(s: &str) -> VarpnResult<Vec<Lexeme>> {
     let mut buf = String::new();
@@ -253,9 +356,8 @@ pub fn parse_tokens(s: &str) -> VarpnResult<Vec<Lexeme>> {
                         Lexeme::parse_func(std::mem::take(&mut buf))
                             .trace(line!(), "parse tokens")?,
                     );
-                } else {
-                    tokens.push(Lexeme::Control(Control::from_char(c)));
                 }
+                tokens.push(Lexeme::Control(Control::LParen));
                 #[cfg(not(feature = "functions"))]
                 if !buf.is_empty() {
                     tokens.push(
@@ -600,19 +702,21 @@ mod tests {
     #[test]
     fn parse_tokens_function_matrix() {
         let cases = [
-            ("foo(a)", vec!["func:foo", "var:a", "rparen"]),
+            ("foo(a)", vec!["func:foo", "lparen", "var:a", "rparen"]),
             (
                 "sum(1,2)",
-                vec!["func:sum", "lit:1", "comma", "lit:2", "rparen"],
+                vec!["func:sum", "lparen", "lit:1", "comma", "lit:2", "rparen"],
             ),
             (
                 "avg(1.5,2.5)",
-                vec!["func:avg", "lit:1.5", "comma", "lit:2.5", "rparen"],
+                vec![
+                    "func:avg", "lparen", "lit:1.5", "comma", "lit:2.5", "rparen",
+                ],
             ),
             (
                 "max(a,b,c)",
                 vec![
-                    "func:max", "var:a", "comma", "var:b", "comma", "var:c", "rparen",
+                    "func:max", "lparen", "var:a", "comma", "var:b", "comma", "var:c", "rparen",
                 ],
             ),
         ];
@@ -627,7 +731,9 @@ mod tests {
     #[test]
     fn rpn_function_matrix() {
         let cases = [
+            ("foo()", vec!["func:foo/0"]),
             ("foo(a)", vec!["var:a", "func:foo/1"]),
+            ("foo(,)", vec!["func:foo/2"]),
             ("sum(1,2)", vec!["lit:1", "lit:2", "func:sum/2"]),
             ("sum(a+b)", vec!["var:a", "var:b", "op:+", "func:sum/1"]),
             (
