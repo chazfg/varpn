@@ -1,2 +1,3 @@
 [workspace]
 members = ["varpn*"]
+resolver = "3"

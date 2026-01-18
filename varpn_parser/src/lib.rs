@@ -32,6 +32,7 @@ impl OutputStack {
         let new_op_prec = new_op.precedence();
         while !self.0.is_empty() {
             match &self.0[self.0.len() - 1] {
+                #[cfg(feature = "functions")]
                 StackEntry::Func(..) => {
                     self.0.push(new_op.into());
                     break;
@@ -77,6 +78,7 @@ impl OutputStack {
         let new_op_prec = new_op.precedence();
         while !self.0.is_empty() {
             match &self.0[self.0.len() - 1] {
+                #[cfg(feature = "functions")]
                 StackEntry::Func(..) => {
                     self.0.push(new_op.into());
                     break;
@@ -138,6 +140,7 @@ impl OutputStack {
                 self.0.push(control_op.into());
                 Ok(out_vec)
             }
+            #[cfg(feature = "functions")]
             Control::Comma => {
                 while let Some(top) = self.0.last() {
                     match top {
@@ -145,6 +148,7 @@ impl OutputStack {
                             out_vec.push((*op).into());
                             self.0.pop();
                         }
+
                         StackEntry::Func(..)
                         | StackEntry::Control(Control::LParen)
                         | StackEntry::Control(Control::Comma) => break,
@@ -155,16 +159,19 @@ impl OutputStack {
                 Ok(out_vec)
             }
             Control::RParen => {
+                #[cfg(feature = "functions")]
                 let mut comma_count = 0;
                 while let Some(popped_op) = self.0.pop()
                 // && op != StackEntry::Control(Paren::LParen)
                 {
                     match popped_op {
+                        #[cfg(feature = "functions")]
                         StackEntry::Func(func_name) => {
                             out_vec.push(RpnItem::Func(func_name, comma_count + 1));
                             break;
                         }
                         StackEntry::Op(op) => out_vec.push(op.into()),
+                        #[cfg(feature = "functions")]
                         StackEntry::Control(Control::Comma) => comma_count += 1,
                         StackEntry::Control(Control::LParen) => break,
                         StackEntry::Control(Control::RParen) => unreachable!(),
@@ -175,6 +182,7 @@ impl OutputStack {
         }
     }
 
+    #[cfg(feature = "functions")]
     fn push_func(&mut self, func_name: String) -> VarpnResult<()> {
         self.0.push(StackEntry::Func(func_name));
         Ok(())
@@ -200,6 +208,7 @@ pub fn rpn_stack(mut tokens: Vec<Lexeme>) -> VarpnResult<Vec<RpnItem>> {
                         .trace(line!(), "rpn stack")?,
                 );
             }
+            #[cfg(feature = "functions")]
             Lexeme::Function(func_name) => {
                 op_stack.push_func(func_name).trace(line!(), "function")?
             }
@@ -238,9 +247,19 @@ pub fn parse_tokens(s: &str) -> VarpnResult<Vec<Lexeme>> {
                 }
             }
             '(' => {
+                #[cfg(feature = "functions")]
                 if !buf.is_empty() {
                     tokens.push(
                         Lexeme::parse_func(std::mem::take(&mut buf))
+                            .trace(line!(), "parse tokens")?,
+                    );
+                } else {
+                    tokens.push(Lexeme::Control(Control::from_char(c)));
+                }
+                #[cfg(not(feature = "functions"))]
+                if !buf.is_empty() {
+                    tokens.push(
+                        Lexeme::parse_text(std::mem::take(&mut buf))
                             .trace(line!(), "parse tokens")?,
                     );
                 } else {
@@ -281,6 +300,7 @@ type Arity = u32;
 #[derive(Debug)]
 pub enum RpnItem {
     Value(Atom),
+    #[cfg(feature = "functions")]
     Func(String, Arity),
     Op(Op),
 }
@@ -294,6 +314,7 @@ pub enum Atom {
 
 #[derive(Debug, PartialEq, Eq)]
 enum StackEntry {
+    #[cfg(feature = "functions")]
     Func(String),
     Op(Op),
     Control(Control),
@@ -302,7 +323,12 @@ impl StackEntry {
     fn op(&self) -> VarpnResult<Op> {
         match self {
             StackEntry::Op(operation) => Ok(*operation),
-            StackEntry::Control(..) | StackEntry::Func(..) => {
+            #[cfg(feature = "functions")]
+            StackEntry::Func(..) => {
+                Err(VarpnErr::new(line!(), format!("can't make {self:?} an op")))
+            }
+
+            StackEntry::Control(..) => {
                 Err(VarpnErr::new(line!(), format!("can't make {self:?} an op")))
             }
         }
@@ -313,6 +339,7 @@ impl StackEntry {
 pub enum Lexeme {
     Ident(String),
     Number(String),
+    #[cfg(feature = "functions")]
     Function(String),
     Op(Op),
     Control(Control),
@@ -338,6 +365,7 @@ impl Lexeme {
         }
     }
 
+    #[cfg(feature = "functions")]
     fn parse_func(buf: String) -> VarpnResult<Lexeme> {
         if !check_valid(&buf) {
             return Err(VarpnErr::new(
@@ -357,6 +385,7 @@ fn check_valid(buf: &str) -> bool {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Control {
+    #[cfg(feature = "functions")]
     Comma,
     LParen,
     RParen,
@@ -366,6 +395,7 @@ impl Control {
         match c {
             '(' => Self::LParen,
             ')' => Self::RParen,
+            #[cfg(feature = "functions")]
             ',' => Self::Comma,
             _ => panic!(),
         }
@@ -435,8 +465,10 @@ mod tests {
                 ),
                 Lexeme::Control(Control::LParen) => "lparen".to_string(),
                 Lexeme::Control(Control::RParen) => "rparen".to_string(),
+                #[cfg(feature = "functions")]
                 Lexeme::Control(Control::Comma) => "comma".to_string(),
                 Lexeme::LastValRef => "$".to_string(),
+                #[cfg(feature = "functions")]
                 Lexeme::Function(s) => format!("func:{s}"),
             })
             .collect()
@@ -460,6 +492,7 @@ mod tests {
                         Op::Power => "^",
                     }
                 ),
+                #[cfg(feature = "functions")]
                 RpnItem::Func(s, arity) => format!("func:{s}/{arity}"),
             })
             .collect()
@@ -563,7 +596,7 @@ mod tests {
             assert_eq!(actual, expected, "input: {input}");
         }
     }
-
+    #[cfg(feature = "functions")]
     #[test]
     fn parse_tokens_function_matrix() {
         let cases = [
@@ -590,7 +623,7 @@ mod tests {
             assert_eq!(actual, expected, "input: {input}");
         }
     }
-
+    #[cfg(feature = "functions")]
     #[test]
     fn rpn_function_matrix() {
         let cases = [
